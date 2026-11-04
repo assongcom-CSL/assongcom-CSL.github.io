@@ -291,6 +291,11 @@ body{padding-inline:max(16px,env(safe-area-inset-left,0px)) max(16px,env(safe-ar
 .wgrid .wsel{border:0;background:transparent;padding:0;border-radius:4px;margin:-2.5px;cursor:pointer;pointer-events:none}
 .wgrid .wsel[aria-pressed="true"]{box-shadow:0 0 0 1.2px var(--ink)}
 .wgrid .wsel:focus-visible{outline:2px solid var(--c1)}
+/* v1.2: tap a cell in the day grid to highlight its record (same look as the week review) */
+.hgrid{position:relative}
+.hgrid.picking .cell.fill:not(.pick),.hgrid.picking .cell.run:not(.pick){opacity:.35}
+.cell.pick{position:relative;z-index:2;box-shadow:0 0 0 1.5px var(--ink)}
+.item.hit{box-shadow:var(--shadow),inset 0 0 0 1.5px var(--ink)}
 .drec{display:flex;flex-direction:column;gap:6px}
 .drec .dh{display:flex;justify-content:space-between;gap:8px;font-size:12.5px;font-weight:600;color:var(--muted)}
 .drec .dh .n{font-family:var(--mono)}
@@ -317,8 +322,8 @@ body{padding-inline:max(16px,env(safe-area-inset-left,0px)) max(16px,env(safe-ar
 (() => {
 'use strict';
 /* ================= version ================= */
-const APP_VERSION = '1.1';
-const APP_BUILD = '2026-10-29';
+const APP_VERSION = '1.2';
+const APP_BUILD = '2026-11-04';
 const IOS_BASE = '1.1';
 
 /* ================= Firebase (same project as the iPhone app) ================= */
@@ -601,6 +606,7 @@ let recOpen = LS.get('ht:recOpen') === '1';
 let totOpen = LS.get('ht:totOpen') !== '0';
 let weekOpen = LS.get('ht:weekOpen') === '1';
 let weekStart = startOfWeek(new Date());
+let dPick = null, dPickAt = null, dPickDay = null;   // v1.2: picked record in the day grid (entry id or 'live'), tapped slot, its day
 let wPick = null, wPickAt = null;   // picked record in week review: entry id or 'live'; wPickAt = tapped cell "d:i"
 let openItem = null, armedDelete = null;
 function startOfWeek(d){ const x = startOfDay(d); x.setDate(x.getDate() - x.getDay()); return x; }
@@ -747,6 +753,8 @@ function hideSugg(){ const b = $('#sugg'); if (b) b.hidden = true; }
 document.addEventListener('click', e => { if (!e.target.closest('#sugg,#taskIn,.cat')) hideSugg(); });
 // Tapping anywhere outside the week review, or Esc, clears the picked record.
 document.addEventListener('click', e => { if (wPick && e.target.isConnected && !e.target.closest('#weekBody')) { wPick = null; wPickAt = null; renderWeek(); } });
+document.addEventListener('click', e => { if (dPick && e.target.isConnected && !e.target.closest('#grid,#list')) { dPick = null; dPickAt = null; renderGrid(); renderList(); } });
+document.addEventListener('keydown', e => { if (e.key === 'Escape' && dPick) { dPick = null; dPickAt = null; renderGrid(); renderList(); } });
 document.addEventListener('keydown', e => { if (e.key === 'Escape' && wPick) { wPick = null; wPickAt = null; renderWeek(); } });
 
 /* ---------- render ---------- */
@@ -798,11 +806,13 @@ function renderGrid(){
   const isToday = sameDay(viewDate, now), nd = new Date(), nowMin = nd.getHours()*60 + nd.getMinutes();
   const nowSlot = isToday ? slotOf(nowMin) : -1, futureDay = startOfDay(viewDate) > nd;
   const colOf = i => { const c = Math.floor(i/6); return c < 3 ? c + 1 : c + 2; };
-  let html = '<div class="hgrid">';
+  if (dPick && !sameDay(dPickDay, viewDate)) { dPick = null; dPickAt = null; }
+  const hl = dPick || openItem;                 // highlighted record: tapped cell, or the record being edited
+  let html = `<div class="hgrid${hl ? ' picking' : ''}">`;
   for (let i = 0; i < SLOTS; i++) {
     const c = cells[i], sm = slotMin(i);
     let cls = 'cell', st = `grid-column:${colOf(i)};grid-row:${i%6 + 1};`;
-    if (c) { cls += c.live ? ' run' : ' fill'; st += `--cc:${catVar(c.cat)}`; }
+    if (c) { cls += c.live ? ' run' : ' fill'; st += `--cc:${catVar(c.cat)}`; if (hl && (c.ref ? c.ref.id : 'live') === hl) cls += ' pick'; }
     else if (futureDay || (isToday && sm > nowMin)) cls += ' future';
     if (i === nowSlot) cls += ' now';
     const lab = `${pad(Math.floor(sm/60))}:${pad(sm%60)}` + (c ? ` ${CATS[c.cat]} ${c.ref ? c.ref.title : running.title}` : '');
@@ -811,17 +821,24 @@ function renderGrid(){
   const lb = (t, col, end) => `<span class="lb${end ? ' end' : ''}" style="grid-column:${col}" aria-hidden="true">${t}</span>`;
   html += lb(0,1) + lb(3,3,true) + [6,9,12,15,18,21].map(h => lb(h, h - 6 + 5)).join('') + lb(24,22,true) + '</div>';
   const g = $('#grid'); g.innerHTML = html;
+  // v1.2: tap a filled cell -> highlight its cells + its row in the record list, bubble over the cell.
+  // Tap the same record again to clear. Editing is done by tapping the highlighted row below.
   g.querySelectorAll('.cell').forEach(b => b.onclick = () => {
-    const c = cells[+b.dataset.i], sm = slotMin(+b.dataset.i);
-    if (!c) { toast(`${pad(Math.floor(sm/60))}:${pad(sm%60)} · 기록 없음`); return; }
-    if (c.ref && !c.ref.uploaded) {
-      recOpen = true; LS.set('ht:recOpen','1'); openItem = c.ref.id; armedDelete = null; renderList();
-      const it = $('#item-' + CSS.escape(c.ref.id)); if (it) it.scrollIntoView({ behavior:'smooth', block:'center' });
-      return;
-    }
-    const s = c.ref ? c.ref.start : running.start, e = c.ref ? c.ref.end : Date.now();
-    toast(`${hm(s)}–${c.live ? '진행 중' : hm(e)} · ${CATS[c.cat]} · ${c.ref ? c.ref.title : running.title} (${Math.round((e-s)/60000)}분)`);
+    const i = +b.dataset.i, c = cells[i], sm = slotMin(i);
+    if (!c) { dPick = null; dPickAt = null; renderGrid(); renderList(); toast(`${pad(Math.floor(sm/60))}:${pad(sm%60)} · 기록 없음`); return; }
+    const r = c.ref ? c.ref.id : 'live';
+    if (dPick === r) { dPick = null; dPickAt = null; }
+    else { dPick = r; dPickAt = i; dPickDay = new Date(viewDate); if (openItem !== r) { openItem = null; preview = null; armedDelete = null; } }
+    if (dPick) { recOpen = true; LS.set('ht:recOpen','1'); }
+    renderGrid(); renderList();
+    const it = dPick && $('#item-' + CSS.escape(dPick)); if (it) it.scrollIntoView({ behavior:'smooth', block:'nearest' });
   });
+  if (dPick) {
+    const hg = g.querySelector('.hgrid');
+    let cell = dPickAt != null && hg.querySelector(`.cell[data-i="${dPickAt}"]`);
+    if (!cell || !cell.classList.contains('pick')) cell = hg.querySelector('.cell.pick');
+    showPop(hg, cell, dPick, true);
+  }
 }
 function renderTotals(){
   const sums = totals(viewDate, Date.now()), total = sums.reduce((a,b)=>a+b,0), max = Math.max(60, ...sums);
@@ -843,12 +860,12 @@ function renderList(){
   if (!recOpen) return;
   if (!list.length && !pending) { box.innerHTML = `<div class="empty">이 날의 기록이 아직 없어요.</div>`; return; }
   const rows = [];
-  if (pending) rows.push(`<div class="item" style="--cc:${catVar(running.cat)}"><div class="item-main" style="cursor:default"><span class="stripe"></span><span style="min-width:0"><div class="t">${esc(running.title)}</div><div class="m">${hm(running.start)}–진행 중 · ${CATS[running.cat]}</div></span><span class="d">${Math.max(0, Math.floor((Date.now()-running.start)/60000))}분</span></div></div>`);
+  if (pending) rows.push(`<div class="item${dPick === 'live' ? ' hit' : ''}" id="item-live" style="--cc:${catVar(running.cat)}"><div class="item-main" style="cursor:default"><span class="stripe"></span><span style="min-width:0"><div class="t">${esc(running.title)}</div><div class="m">${hm(running.start)}–진행 중 · ${CATS[running.cat]}</div></span><span class="d">${Math.max(0, Math.floor((Date.now()-running.start)/60000))}분</span></div></div>`);
   for (const e of list) {
     const locked = !!e.uploaded, open = openItem === e.id && !locked;
     const v = open && preview && preview.id === e.id ? { ...e, ...preview } : e;
     const icon = `<span class="ic">${locked ? '<svg viewBox="0 0 16 16"><rect x="3.5" y="7" width="9" height="6.5" rx="1.5"/><path d="M5.5 7V5a2.5 2.5 0 0 1 5 0v2"/></svg>' : '<svg viewBox="0 0 16 16"><path d="M10.5 2.5l3 3L6 13H3v-3z"/></svg>'}</span>`;
-    rows.push(`<div class="item ${locked ? 'locked' : ''}" style="--cc:${catVar(v.cat)}" id="item-${esc(e.id)}">
+    rows.push(`<div class="item ${locked ? 'locked' : ''}${dPick === e.id ? ' hit' : ''}" style="--cc:${catVar(v.cat)}" id="item-${esc(e.id)}">
       <button class="item-main" data-id="${esc(e.id)}" ${locked ? 'disabled' : ''} aria-expanded="${open}">
         <span class="stripe"></span>
         <span style="min-width:0"><div class="t">${esc(v.title)}</div><div class="m">${hm(v.start)}–${hm(v.end)} · ${CATS[v.cat]}${locked ? ' · 캘린더 ✓' : ''}</div></span>
@@ -866,7 +883,7 @@ function renderList(){
     </div>`);
   }
   box.innerHTML = rows.join('');
-  box.querySelectorAll('.item-main[data-id]:not([disabled])').forEach(b => b.onclick = () => { openItem = openItem === b.dataset.id ? null : b.dataset.id; armedDelete = null; preview = null; renderGrid(); renderList(); });
+  box.querySelectorAll('.item-main[data-id]:not([disabled])').forEach(b => b.onclick = () => { openItem = openItem === b.dataset.id ? null : b.dataset.id; if (dPick && dPick !== b.dataset.id) { dPick = null; dPickAt = null; } armedDelete = null; preview = null; renderGrid(); renderList(); });
   const ed = box.querySelector('.item-edit');
   if (ed) {
     ed.querySelector('[data-act="save"]').onclick = saveEdit;
@@ -982,18 +999,37 @@ function renderWeek(){
   if (!wPick) return;
   let cell = wPickAt && grid.querySelector(`.wc[data-d="${wPickAt.split(':')[0]}"][data-i="${wPickAt.split(':')[1]}"]`);
   if (!cell || cell.dataset.r !== wPick) cell = grid.querySelector(`.wc[data-r="${wPick}"]`);
-  if (!cell) return;
+  showPop(grid, cell, wPick);
+}
+
+/* v1.2 shared bubble: record title + time over a grid cell. ref = entry id or 'live'. */
+function showPop(box, cell, ref, side){
+  if (!box || !cell) return;
   let info;
-  if (wPick === 'live') info = running.active ? { cat: running.cat, title: running.title, start: running.start, end: null } : null;
-  else { const e = entries[wPick]; info = e && { cat: e.cat, title: e.title || CATS[e.cat], start: e.start, end: e.end }; }
+  if (ref === 'live') info = running.active ? { cat: running.cat, title: running.title, start: running.start, end: null } : null;
+  else { const e = entries[ref]; info = e && { cat: e.cat, title: e.title || CATS[e.cat], start: e.start, end: e.end }; }
   if (!info) return;
-  const mins = Math.max(0, Math.round(((info.end || now) - info.start) / 60000));
+  const mins = Math.max(0, Math.round(((info.end || Date.now()) - info.start) / 60000));
   const pop = document.createElement('div');
   pop.className = 'wpop'; pop.style.setProperty('--cc', catVar(info.cat));
-  pop.innerHTML = `<b><i></i>${esc(info.title)}</b><span>${hm(info.start)}–${info.end ? hm(info.end) : ''} · ${info.end ? '' : '진행 중 · '}${mins}분</span>`;
-  grid.appendChild(pop);
-  const gr = grid.getBoundingClientRect(), cr = cell.getBoundingClientRect();
-  const w = pop.offsetWidth, cx = cr.left - gr.left + cr.width / 2;
+  pop.innerHTML = `<b><i></i>${esc(info.title)}</b><span>${hm(info.start)}–${info.end ? hm(info.end) : ''} · ${info.end ? '' : '진행 중 · '}${mins}분 · ${CATS[info.cat]}</span>`;
+  box.appendChild(pop);
+  const gr = box.getBoundingClientRect(), cr = cell.getBoundingClientRect();
+  const w = pop.offsetWidth, h = pop.offsetHeight;
+  if (side) {
+    // Day grid: records run down a column, so put the bubble beside the whole highlighted block.
+    const rs = [...box.querySelectorAll('.pick')].map(x => x.getBoundingClientRect());
+    const L = Math.min(...rs.map(r => r.left)) - gr.left, R = Math.max(...rs.map(r => r.right)) - gr.left;
+    const T = Math.min(...rs.map(r => r.top)) - gr.top, B = Math.max(...rs.map(r => r.bottom)) - gr.top;
+    let x = R + 8 + w <= gr.width ? R + 8 : L - 8 - w >= 0 ? L - 8 - w : null;
+    if (x !== null) {
+      pop.style.transform = 'none';
+      pop.style.left = x + 'px';
+      pop.style.top = Math.max(0, Math.min(gr.height - h, (T + B) / 2 - h / 2)) + 'px';
+      return;
+    }
+  }
+  const cx = cr.left - gr.left + cr.width / 2;
   pop.style.left = Math.max(0, Math.min(gr.width - w, cx - w / 2)) + 'px';
   let top = cr.top - gr.top - 6;
   if (top - pop.offsetHeight < 0) { pop.style.transform = 'none'; top = cr.bottom - gr.top + 6; }

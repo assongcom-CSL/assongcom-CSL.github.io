@@ -278,7 +278,17 @@ body{padding-inline:max(16px,env(safe-area-inset-left,0px)) max(16px,env(safe-ar
 .wgrid .wc.run{background:var(--cc);opacity:.55}
 .wgrid .wl{font-size:9px;color:var(--muted);text-align:right;padding-right:3px;align-self:center;line-height:1;font-variant-numeric:tabular-nums}
 .wgrid .wt{font-size:10px;color:var(--muted);text-align:center;font-family:var(--mono);padding-top:4px;white-space:nowrap;overflow:hidden}
-.wgrid .wsel{border:0;background:transparent;padding:0;border-radius:4px;margin:-2.5px;cursor:pointer}
+.wgrid .wc{cursor:pointer}
+.wgrid.picking .wc.fill:not(.pick),.wgrid.picking .wc.run:not(.pick){opacity:.35}
+.wgrid .wc.pick{position:relative;z-index:2;box-shadow:0 0 0 1.5px var(--ink)}
+.wgrid .wh{cursor:pointer}
+.wpop{position:absolute;z-index:5;max-width:220px;background:var(--ink);color:var(--surface);border-radius:9px;padding:7px 10px;font-size:12px;line-height:1.35;box-shadow:0 6px 18px rgba(0,0,0,.18);pointer-events:none;transform:translateY(-100%)}
+.wpop b{display:block;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.wpop span{font-family:var(--mono);font-size:11px;opacity:.75}
+.wpop i{display:inline-block;width:7px;height:7px;border-radius:2px;background:var(--cc);margin-right:5px;vertical-align:1px}
+.drow.hit{background:var(--sunk);border-radius:7px;box-shadow:inset 0 0 0 1.2px var(--line)}
+.drow{cursor:pointer;border-radius:7px;padding-inline:4px;margin-inline:-4px}
+.wgrid .wsel{border:0;background:transparent;padding:0;border-radius:4px;margin:-2.5px;cursor:pointer;pointer-events:none}
 .wgrid .wsel[aria-pressed="true"]{box-shadow:0 0 0 1.2px var(--ink)}
 .wgrid .wsel:focus-visible{outline:2px solid var(--c1)}
 .drec{display:flex;flex-direction:column;gap:6px}
@@ -591,6 +601,7 @@ let recOpen = LS.get('ht:recOpen') === '1';
 let totOpen = LS.get('ht:totOpen') !== '0';
 let weekOpen = LS.get('ht:weekOpen') === '1';
 let weekStart = startOfWeek(new Date());
+let wPick = null, wPickAt = null;   // picked record in week review: entry id or 'live'; wPickAt = tapped cell "d:i"
 let openItem = null, armedDelete = null;
 function startOfWeek(d){ const x = startOfDay(d); x.setDate(x.getDate() - x.getDay()); return x; }
 const wide = () => window.matchMedia('(min-width:900px)').matches;
@@ -734,6 +745,9 @@ function showSugg(){
 }
 function hideSugg(){ const b = $('#sugg'); if (b) b.hidden = true; }
 document.addEventListener('click', e => { if (!e.target.closest('#sugg,#taskIn,.cat')) hideSugg(); });
+// Tapping anywhere outside the week review, or Esc, clears the picked record.
+document.addEventListener('click', e => { if (wPick && e.target.isConnected && !e.target.closest('#weekBody')) { wPick = null; wPickAt = null; renderWeek(); } });
+document.addEventListener('keydown', e => { if (e.key === 'Escape' && wPick) { wPick = null; wPickAt = null; renderWeek(); } });
 
 /* ---------- render ---------- */
 function renderAll(){
@@ -910,14 +924,18 @@ function renderWeek(){
   let html = '';
   days.forEach((d, i) => {
     const today = sameDay(d, now);
-    html += `<div class="wh${today ? ' today' : ''}${i === 0 ? ' sun' : ''}" style="grid-column:${dayCol(i)} / span 6;grid-row:1"><b>${DOW[i]}</b><span>${d.getDate()}</span></div>`;
+    html += `<div class="wh${today ? ' today' : ''}${i === 0 ? ' sun' : ''}" style="grid-column:${dayCol(i)} / span 6;grid-row:1" data-d="${i}"><b>${DOW[i]}</b><span>${d.getDate()}</span></div>`;
     const cells = cellsFor(d, now), futureDay = startOfDay(d) > nd;
     for (let h = 0; h < HOURS.length; h++) for (let s = 0; s < 6; s++) {
       const idx = h * 6 + s, c = cells[idx];
-      let cls = 'wc', st = `grid-column:${dayCol(i) + s};grid-row:${rowOf(h)}`;
-      if (c) { cls += c.live ? ' run' : ' fill'; st += `;--cc:${catVar(c.cat)}`; }
+      let cls = 'wc', st = `grid-column:${dayCol(i) + s};grid-row:${rowOf(h)}`, r = '';
+      if (c) {
+        r = c.ref ? c.ref.id : 'live';
+        cls += c.live ? ' run' : ' fill'; st += `;--cc:${catVar(c.cat)}`;
+        if (wPick === r) cls += ' pick';
+      }
       else if (futureDay || (today && slotMin(idx) > nowMin)) cls += ' fut';
-      html += `<i class="${cls}" style="${st}"></i>`;
+      html += `<i class="${cls}" style="${st}" data-d="${i}" data-i="${idx}"${r ? ` data-r="${r}"` : ''}></i>`;
     }
     html += `<div class="wt" style="grid-column:${dayCol(i)} / span 6;grid-row:${totalRow}">${daySums[i] > 0 ? fmtDur(daySums[i]) : '–'}</div>`;
     html += `<button class="wsel" style="grid-column:${dayCol(i)} / span 6;grid-row:2 / ${totalRow}" data-d="${i}" aria-pressed="${sameDay(d, viewDate)}" aria-label="${d.getMonth()+1}월 ${d.getDate()}일 보기"></button>`;
@@ -929,17 +947,57 @@ function renderWeek(){
   const dayTotal = totals(viewDate, now).reduce((a,b)=>a+b,0);
   let rec = `<div class="dh"><span>${viewDate.getMonth()+1}월 ${viewDate.getDate()}일(${DOW[viewDate.getDay()]}) 기록</span><span class="n">${list.length + (live ? 1 : 0)}건 · ${fmtDur(dayTotal)}</span></div>`;
   if (!list.length && !live) rec += `<div class="none">이 날의 기록이 없어요.</div>`;
-  rec += list.map(e => `<div class="drow" style="--cc:${catVar(e.cat)}"><i></i><span class="tm">${hm(e.start)}–${hm(e.end)}</span><span class="ti">${esc(e.title || CATS[e.cat])}</span><span class="mn">${Math.round((e.end-e.start)/60000)}분</span></div>`).join('');
-  if (live) rec += `<div class="drow live" style="--cc:${catVar(running.cat)}"><i></i><span class="tm">${hm(running.start)}–</span><span class="ti">${esc(running.title)}</span><span class="mn">진행 중 · ${Math.max(0, Math.floor((now-running.start)/60000))}분</span></div>`;
+  rec += list.map(e => `<div class="drow${wPick === e.id ? ' hit' : ''}" data-r="${e.id}" style="--cc:${catVar(e.cat)}"><i></i><span class="tm">${hm(e.start)}–${hm(e.end)}</span><span class="ti">${esc(e.title || CATS[e.cat])}</span><span class="mn">${Math.round((e.end-e.start)/60000)}분</span></div>`).join('');
+  if (live) rec += `<div class="drow live${wPick === 'live' ? ' hit' : ''}" data-r="live" style="--cc:${catVar(running.cat)}"><i></i><span class="tm">${hm(running.start)}–</span><span class="ti">${esc(running.title)}</span><span class="mn">진행 중 · ${Math.max(0, Math.floor((now-running.start)/60000))}분</span></div>`;
 
   body.innerHTML = `
     <div class="wnav"><button id="wPrev" aria-label="지난 주">‹</button><button class="cur" id="wNow">${thisWeek ? '이번 주' : range}</button><button id="wNext" aria-label="다음 주">›</button></div>
-    <div class="wgrid" style="grid-template-columns:${tpl.join(' ')};grid-template-rows:auto repeat(3,auto) 3px repeat(${HOURS.length - 3},auto) auto">${html}</div>
+    <div class="wgrid${wPick ? ' picking' : ''}" style="grid-template-columns:${tpl.join(' ')};grid-template-rows:auto repeat(3,auto) 3px repeat(${HOURS.length - 3},auto) auto">${html}</div>
     <div class="drec">${rec}</div>`;
-  $('#wPrev').onclick = () => { weekStart = new Date(weekStart.getFullYear(), weekStart.getMonth(), weekStart.getDate() - 7); renderWeek(); };
-  $('#wNext').onclick = () => { weekStart = new Date(weekStart.getFullYear(), weekStart.getMonth(), weekStart.getDate() + 7); renderWeek(); };
-  $('#wNow').onclick = () => { weekStart = startOfWeek(new Date()); renderWeek(); };
-  body.querySelectorAll('.wsel').forEach(b => b.onclick = () => { viewDate = new Date(days[+b.dataset.d]); openItem = null; renderAll(); });
+  const unpick = () => { wPick = null; wPickAt = null; };
+  $('#wPrev').onclick = () => { unpick(); weekStart = new Date(weekStart.getFullYear(), weekStart.getMonth(), weekStart.getDate() - 7); renderWeek(); };
+  $('#wNext').onclick = () => { unpick(); weekStart = new Date(weekStart.getFullYear(), weekStart.getMonth(), weekStart.getDate() + 7); renderWeek(); };
+  $('#wNow').onclick = () => { unpick(); weekStart = startOfWeek(new Date()); renderWeek(); };
+  // Keyboard: the per-day buttons still pick the day.
+  body.querySelectorAll('.wsel').forEach(b => b.onclick = () => { unpick(); viewDate = new Date(days[+b.dataset.d]); openItem = null; renderAll(); });
+
+  // Tap a cell: pick that day and, if the cell holds a record, highlight it below and show a bubble.
+  const grid = body.querySelector('.wgrid');
+  grid.onclick = ev => {
+    const t = ev.target.closest('[data-d]'); if (!t || t.classList.contains('wsel')) return;
+    const d = +t.dataset.d, r = t.dataset.r || null, sameDayPicked = sameDay(days[d], viewDate);
+    if (r && wPick === r && sameDayPicked) unpick();
+    else { wPick = r; wPickAt = r ? `${d}:${t.dataset.i}` : null; }
+    if (!sameDayPicked) { viewDate = new Date(days[d]); openItem = null; renderAll(); } else renderWeek();
+    const hit = $('#weekBody .drow.hit'); if (hit) hit.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  };
+  // Tap a record row: highlight its cells in the grid (tap again to clear).
+  body.querySelectorAll('.drow[data-r]').forEach(row => row.onclick = () => {
+    const r = row.dataset.r;
+    if (wPick === r) unpick(); else { wPick = r; wPickAt = null; }
+    renderWeek();
+  });
+
+  // Bubble above the tapped cell (or the record's first cell when picked from the list).
+  if (!wPick) return;
+  let cell = wPickAt && grid.querySelector(`.wc[data-d="${wPickAt.split(':')[0]}"][data-i="${wPickAt.split(':')[1]}"]`);
+  if (!cell || cell.dataset.r !== wPick) cell = grid.querySelector(`.wc[data-r="${wPick}"]`);
+  if (!cell) return;
+  let info;
+  if (wPick === 'live') info = running.active ? { cat: running.cat, title: running.title, start: running.start, end: null } : null;
+  else { const e = entries[wPick]; info = e && { cat: e.cat, title: e.title || CATS[e.cat], start: e.start, end: e.end }; }
+  if (!info) return;
+  const mins = Math.max(0, Math.round(((info.end || now) - info.start) / 60000));
+  const pop = document.createElement('div');
+  pop.className = 'wpop'; pop.style.setProperty('--cc', catVar(info.cat));
+  pop.innerHTML = `<b><i></i>${esc(info.title)}</b><span>${hm(info.start)}–${info.end ? hm(info.end) : ''} · ${info.end ? '' : '진행 중 · '}${mins}분</span>`;
+  grid.appendChild(pop);
+  const gr = grid.getBoundingClientRect(), cr = cell.getBoundingClientRect();
+  const w = pop.offsetWidth, cx = cr.left - gr.left + cr.width / 2;
+  pop.style.left = Math.max(0, Math.min(gr.width - w, cx - w / 2)) + 'px';
+  let top = cr.top - gr.top - 6;
+  if (top - pop.offsetHeight < 0) { pop.style.transform = 'none'; top = cr.bottom - gr.top + 6; }
+  pop.style.top = top + 'px';
 }
 
 function renderSync(){

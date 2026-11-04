@@ -291,6 +291,21 @@ body{padding-inline:max(16px,env(safe-area-inset-left,0px)) max(16px,env(safe-ar
 .wgrid .wsel{border:0;background:transparent;padding:0;border-radius:4px;margin:-2.5px;cursor:pointer;pointer-events:none}
 .wgrid .wsel[aria-pressed="true"]{box-shadow:0 0 0 1.2px var(--ink)}
 .wgrid .wsel:focus-visible{outline:2px solid var(--c1)}
+/* v1.3: calendar appointments (outline), range picking for manual add */
+:root{--appt:#7C5CFA}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--appt:#A68BFF}}
+:root[data-theme="dark"]{--appt:#A68BFF}
+.cell.appt{outline:1.5px solid var(--appt);outline-offset:-1.5px}
+.wgrid .wc.appt{outline:1px solid var(--appt);outline-offset:-1px}
+.wgrid .wc.fut.appt{opacity:1;background:var(--cell)}
+.cell.asel{box-shadow:0 0 0 1.5px var(--ink);position:relative;z-index:2;background-image:repeating-linear-gradient(135deg,transparent 0 3px,rgba(0,0,0,.12) 3px 5px)}
+.wpop .ap{display:block;margin-top:3px;padding-top:3px;border-top:1px solid rgba(127,127,127,.35);font-size:11px;opacity:.9;color:var(--surface)}
+.wpop .ap::before{content:'';display:inline-block;width:7px;height:7px;border-radius:2px;outline:1.5px solid var(--appt);outline-offset:-1.5px;margin-right:5px;vertical-align:0}
+.calchip{margin-right:auto;display:inline-flex;align-items:center;gap:6px;border:0;background:var(--surface);box-shadow:var(--shadow);border-radius:9px;height:28px;padding:0 10px;font-size:12px;font-weight:600;color:var(--ink)}
+.calchip i{width:9px;height:9px;border-radius:2.5px;outline:1.5px solid var(--appt);outline-offset:-1.5px}
+.calchip.off{color:var(--muted)}
+.calchip.off i{outline-color:var(--muted)}
+.sheet h2 small{font-size:12px;font-weight:500;color:var(--muted);margin-left:6px}
 /* v1.2: tap a cell in the day grid to highlight its record (same look as the week review) */
 .hgrid{position:relative}
 .hgrid.picking .cell.fill:not(.pick),.hgrid.picking .cell.run:not(.pick){opacity:.35}
@@ -322,7 +337,7 @@ body{padding-inline:max(16px,env(safe-area-inset-left,0px)) max(16px,env(safe-ar
 (() => {
 'use strict';
 /* ================= version ================= */
-const APP_VERSION = '1.2';
+const APP_VERSION = '1.3';
 const APP_BUILD = '2026-11-04';
 const IOS_BASE = '1.1';
 
@@ -380,10 +395,23 @@ function loadCache(){
 }
 const live = () => Object.values(entries).filter(e => !e.deleted);
 const dayEntries = d => live().filter(e => sameDay(e.start, d)).sort((a,b) => a.start - b.start);
+/* v1.3: when records overlap, the one entered later wins (created; old records without it fall back to start).
+   The running task is always on top. Totals count only the visible part, so overlapped time is counted once. */
+const prio = e => e.created || e.start;
+const byPrio = list => list.slice().sort((a,b) => prio(a) - prio(b));
+function layers(d, now){
+  const out = byPrio(dayEntries(d)).map(e => ({ s: e.start, e: e.end, cat: e.cat }));
+  if (running.active && sameDay(running.start, d)) out.push({ s: running.start, e: Math.max(running.start, now), cat: running.cat });
+  return out;   // lowest priority first
+}
 function totals(d, now){
-  const s = [0,0,0,0];
-  for (const e of dayEntries(d)) s[e.cat % 4] += (e.end - e.start) / 60000;
-  if (running.active && sameDay(running.start, d)) s[running.cat % 4] += Math.max(0, (now - running.start) / 60000);
+  const s = [0,0,0,0], cover = [];   // cover: intervals already claimed by higher-priority layers
+  for (const L of layers(d, now).reverse()) {
+    let segs = [[L.s, L.e]];
+    for (const [cs, ce] of cover) segs = segs.flatMap(([a, b]) => (ce <= a || cs >= b) ? [[a, b]] : [[a, Math.min(b, cs)], [Math.max(a, ce), b]].filter(([x, y]) => y > x));
+    for (const [a, b] of segs) s[L.cat % 4] += (b - a) / 60000;
+    cover.push([L.s, L.e]);
+  }
   return s;
 }
 function recentTitles(cat, limit = 10){
@@ -422,7 +450,7 @@ function stopTask(){
   const end = floorMin(Date.now());
   let saved = null;
   if (end - running.start >= 60000) {
-    saved = { id: uuid(), cat: running.cat, title: running.title, link: running.link, start: running.start, end, uploaded:false, deleted:false, modified: Date.now() };
+    saved = { id: uuid(), cat: running.cat, title: running.title, link: running.link, start: running.start, end, uploaded:false, deleted:false, created: Date.now(), modified: Date.now() };
     entries[saved.id] = saved;
   }
   running = { ...IDLE, stamp: Date.now() };
@@ -504,7 +532,7 @@ const Cloud = {
         if (!d || typeof d !== 'object') continue;
         const start = num(d.start), end = num(d.end), modified = num(d.modified);
         if (!isFinite(start) || !isFinite(end) || !isFinite(modified)) continue;
-        remote[id] = { id, cat: Number(d.cat) || 0, title: d.title || '', link: d.link || '', start, end, uploaded: !!d.uploaded, deleted: !!d.deleted, modified };
+        remote[id] = { id, cat: Number(d.cat) || 0, title: d.title || '', link: d.link || '', start, end, uploaded: !!d.uploaded, deleted: !!d.deleted, modified, ...(isFinite(num(d.created)) ? { created: num(d.created) } : {}) };
       }
       let rr = null;
       if (root.running && isFinite(num(root.running.stamp))) {
@@ -519,11 +547,19 @@ const Cloud = {
         const r = remote[e.id];
         if (r && r.modified >= e.modified) continue;
         body['entries/' + e.id] = { cat: e.cat, title: e.title, link: e.link || '', start: Math.round(e.start), end: Math.round(e.end), uploaded: !!e.uploaded, deleted: !!e.deleted, modified: Math.round(e.modified) };
+        if (e.created && LS.get('ht:noCreated') !== '1') body['entries/' + e.id].created = Math.round(e.created);
       }
       const sendRunning = rr == null ? running.stamp > 0 : running.stamp > rr.stamp;
       if (sendRunning) body.running = { active: running.active, cat: running.cat, title: running.title, link: running.link || '', start: Math.round(running.start || 0), stamp: Math.round(running.stamp) };
       if (Object.keys(body).length) {
-        const p = await fetch(this.url(tok), { method:'PATCH', headers:{ 'Content-Type':'application/json' }, body: JSON.stringify(body) });
+        let p = await fetch(this.url(tok), { method:'PATCH', headers:{ 'Content-Type':'application/json' }, body: JSON.stringify(body) });
+        // If the database rules refuse the new "created" field, send without it from now on (display falls back to start order).
+        const hasCreated = Object.values(body).some(v => v && v.created !== undefined);
+        if (!p.ok && hasCreated && (p.status === 400 || p.status === 401 || p.status === 403)) {
+          for (const v of Object.values(body)) if (v) delete v.created;
+          p = await fetch(this.url(tok), { method:'PATCH', headers:{ 'Content-Type':'application/json' }, body: JSON.stringify(body) });
+          if (p.ok) LS.set('ht:noCreated', '1');
+        }
         if (!p.ok) throw new Error('보내지 못했어요 (서버 응답 ' + p.status + ')');
       }
       this.state = 'idle'; this.error = ''; this.lastSync = Date.now();
@@ -571,6 +607,113 @@ const WX_ICONS = {
   fog:    '<g stroke="#A9AFB9" stroke-width="2" stroke-linecap="round"><path d="M4 9h16M6 13h12M4 17h16"/></g>',
 };
 
+/* ================= Google Calendar (v1.3, read + add appointments) =================
+   Browser-only OAuth (Google Identity Services token model): no server, no client secret.
+   Reads the primary calendar; events whose title starts with [Happy]/[Future]/[Work]/[Book]
+   are Hope Tracker records saved by the iPhone app, so they are skipped. */
+const GCAL_CLIENT_ID = '';   // OAuth 2.0 web client ID (…apps.googleusercontent.com); empty = calendar features hidden
+const GCAL_SCOPE = 'https://www.googleapis.com/auth/calendar.events';
+const GCAL_API = 'https://www.googleapis.com/calendar/v3/calendars/primary/events';
+const HT_PREFIX = /^\s*\[(Happy|Future|Work|Book)\]/i;
+const Gcal = {
+  tok: null, ev: {}, ranges: {}, client: null, busy: false, error: '',
+  get enabled(){ return !!GCAL_CLIENT_ID; },
+  get ok(){ return !!(this.tok && this.tok.exp > Date.now() + 30000); },
+  get linked(){ return LS.get('ht:gcal:linked') === '1'; },
+  init(){
+    try { this.tok = JSON.parse(LS.get('ht:gcal:tok') || 'null'); } catch(e) { this.tok = null; }
+    try { const c = JSON.parse(LS.get('ht:gcal:ev') || 'null'); if (c) this.ev = c; } catch(e) {}
+  },
+  save(){ LS.set('ht:gcal:ev', JSON.stringify(this.ev)); },
+  loadScript(){
+    if (window.google && google.accounts && google.accounts.oauth2) return Promise.resolve();
+    return new Promise((res, rej) => {
+      const sc = document.createElement('script'); sc.src = 'https://accounts.google.com/gsi/client'; sc.async = true;
+      sc.onload = () => res(); sc.onerror = () => rej(new Error('구글 로그인 스크립트를 불러오지 못했어요.'));
+      document.head.appendChild(sc);
+    });
+  },
+  /** Must be called from a tap (it opens Google's popup; after the first consent it closes by itself). */
+  async connect(){
+    if (!this.enabled) return;
+    try { await this.loadScript(); } catch(e) { toast(e.message); return; }
+    if (!this.client) this.client = google.accounts.oauth2.initTokenClient({
+      client_id: GCAL_CLIENT_ID, scope: GCAL_SCOPE,
+      callback: r => {
+        if (r.error) { this.error = r.error; toast('캘린더 연결을 취소했거나 실패했어요.'); renderCalChip(); return; }
+        this.tok = { t: r.access_token, exp: Date.now() + (Number(r.expires_in) || 3600) * 1000 };
+        LS.set('ht:gcal:tok', JSON.stringify(this.tok)); LS.set('ht:gcal:linked', '1');
+        this.error = ''; this.ranges = {}; this.refresh(true);
+      }
+    });
+    this.client.requestAccessToken({ prompt: this.linked ? '' : 'consent', login_hint: session ? session.email : undefined });
+  },
+  disconnect(){
+    if (this.tok && window.google && google.accounts) try { google.accounts.oauth2.revoke(this.tok.t, () => {}); } catch(e) {}
+    this.tok = null; this.ev = {}; this.ranges = {};
+    LS.del('ht:gcal:tok'); LS.del('ht:gcal:ev'); LS.del('ht:gcal:linked');
+    renderAll();
+  },
+  async api(url, opt = {}){
+    if (!this.ok) throw new Error('expired');
+    const r = await fetch(url, { ...opt, headers: { Authorization: 'Bearer ' + this.tok.t, 'Content-Type': 'application/json', ...(opt.headers || {}) } });
+    if (r.status === 401) { this.tok = null; LS.del('ht:gcal:tok'); renderCalChip(); throw new Error('expired'); }
+    if (!r.ok) throw new Error('캘린더 응답 ' + r.status);
+    return r.status === 204 ? null : r.json();
+  },
+  /** Fetch the weeks shown on screen (the picked day's week and the week review's week); at most every 5 minutes. */
+  async refresh(force){
+    if (!this.enabled || !this.ok || this.busy) return;
+    const weeks = [...new Set([startOfWeek(viewDate).getTime(), weekStart.getTime()])].filter(w => force || !(Date.now() - (this.ranges[w] || 0) < 300000));
+    if (!weeks.length) return;
+    this.busy = true;
+    try {
+      for (const w of weeks) {
+        const from = w, to = w + 7 * 86400000 + 3600000;   // +1h covers a DST-free week with margin
+        const q = new URLSearchParams({ timeMin: new Date(from).toISOString(), timeMax: new Date(to).toISOString(), singleEvents: 'true', orderBy: 'startTime', maxResults: '250' });
+        this.ranges[w] = Date.now();   // mark the attempt first so a failure does not retry in a loop
+        const j = await this.api(GCAL_API + '?' + q);
+        for (const [id, e] of Object.entries(this.ev)) if (e.s < to && e.e > from) delete this.ev[id];
+        for (const x of (j && j.items) || []) {
+          if (x.status === 'cancelled' || !x.start || !x.start.dateTime || !x.end || !x.end.dateTime) continue;   // skip all-day
+          if (HT_PREFIX.test(x.summary || '')) continue;                                                       // Hope Tracker record
+          this.ev[x.id] = { id: x.id, title: x.summary || '(제목 없음)', s: Date.parse(x.start.dateTime), e: Date.parse(x.end.dateTime) };
+        }
+      }
+      // keep the cache small: drop events older than 6 weeks
+      const cut = Date.now() - 42 * 86400000;
+      for (const [id, e] of Object.entries(this.ev)) if (e.e < cut) delete this.ev[id];
+      this.error = ''; this.save();
+    } catch(e) {
+      if (e.message !== 'expired') this.error = e.message;
+    } finally { this.busy = false; renderAll(); }
+  },
+  async add(title, start, end, note){
+    const body = { summary: title, start: { dateTime: new Date(start).toISOString() }, end: { dateTime: new Date(end).toISOString() } };
+    if (note) body.description = note;
+    const x = await this.api(GCAL_API, { method: 'POST', body: JSON.stringify(body) });
+    this.ev[x.id] = { id: x.id, title: x.summary || title, s: start, e: end }; this.save();
+  },
+  forDay(d){ const a = startOfDay(d).getTime(), b = a + 86400000; return Object.values(this.ev).filter(e => e.s < b && e.e > a).sort((x,y) => x.s - y.s); }
+};
+/** Appointment per cell (first one wins), same rounding as cellsFor. */
+function apptCells(day){
+  const m0 = startOfDay(day).getTime(), cells = new Array(SLOTS).fill(null);
+  for (const ev of Gcal.forDay(day)) {
+    const s = Math.round((ev.s - m0) / 600000) * 10, e = Math.min(1440, Math.round((ev.e - m0) / 600000) * 10);
+    for (let t = Math.max(0, s); t < Math.max(e, s + 10); t += 10) { const i = slotOf(t); if (i >= 0 && !cells[i]) cells[i] = ev; }
+  }
+  return cells;
+}
+function renderCalChip(){
+  const c = $('#calChip'); if (!c) return;
+  c.hidden = !Gcal.enabled; if (!Gcal.enabled) return;
+  const n = Gcal.forDay(viewDate).length;
+  c.className = 'calchip' + (Gcal.ok ? '' : ' off');
+  c.innerHTML = `<i></i><span>${Gcal.ok ? (n ? `약속 ${n}` : '약속 없음') : Gcal.linked ? '캘린더 다시 연결' : '캘린더 연결'}</span>`;
+  c.title = Gcal.ok ? '구글 캘린더 연결됨 · 눌러서 새로 고침' : '구글 캘린더 연결';
+}
+
 /* ================= gate (Firebase sign-in) ================= */
 let appReady = false;
 function showGate(msg){
@@ -606,6 +749,7 @@ let recOpen = LS.get('ht:recOpen') === '1';
 let totOpen = LS.get('ht:totOpen') !== '0';
 let weekOpen = LS.get('ht:weekOpen') === '1';
 let weekStart = startOfWeek(new Date());
+let addSel = null;   // v1.3: range being picked in the day grid {day, a: first slot, b: last slot or null}
 let dPick = null, dPickAt = null, dPickDay = null;   // v1.2: picked record in the day grid (entry id or 'live'), tapped slot, its day
 let wPick = null, wPickAt = null;   // picked record in week review: entry id or 'live'; wPickAt = tapped cell "d:i"
 let openItem = null, armedDelete = null;
@@ -614,7 +758,7 @@ const wide = () => window.matchMedia('(min-width:900px)').matches;
 
 function startApp(){
   appReady = true;
-  loadCache();
+  loadCache(); Gcal.init();
   $('#app').className = 'wrap app';
   $('#app').innerHTML = `
     <div class="cols" id="colL">
@@ -644,6 +788,7 @@ function startApp(){
     <div class="cols" id="colR">
       <section class="sgrp" id="gridSec" aria-label="시간 그리드">
         <div class="sec-head" style="justify-content:flex-end">
+          <button class="calchip" id="calChip" hidden></button>
           <div class="wx3" id="wx3" hidden aria-label="청담동 3일 예보"></div>
           <div class="daynav">
             <button id="prevDay" aria-label="이전 날">‹</button>
@@ -680,6 +825,7 @@ function startApp(){
   $('#taskIn').addEventListener('input', () => { pushRunningEdits(); showSugg(); });
   $('#linkIn').addEventListener('input', pushRunningEdits);
   $('#prevDay').onclick = () => shiftDay(-1);
+  $('#calChip').onclick = () => { if (Gcal.ok) { Gcal.ranges = {}; Gcal.refresh(true); toast('약속을 새로 받는 중…'); } else Gcal.connect(); };
   $('#nextDay').onclick = () => shiftDay(1);
   $('#todayBtn').onclick = () => { viewDate = new Date(); openItem = null; renderAll(); };
   $('#recToggle').onclick = () => { recOpen = !recOpen; LS.set('ht:recOpen', recOpen ? '1' : '0'); renderList(); };
@@ -753,6 +899,8 @@ function hideSugg(){ const b = $('#sugg'); if (b) b.hidden = true; }
 document.addEventListener('click', e => { if (!e.target.closest('#sugg,#taskIn,.cat')) hideSugg(); });
 // Tapping anywhere outside the week review, or Esc, clears the picked record.
 document.addEventListener('click', e => { if (wPick && e.target.isConnected && !e.target.closest('#weekBody')) { wPick = null; wPickAt = null; renderWeek(); } });
+document.addEventListener('click', e => { if (addSel && addSel.b == null && e.target.isConnected && !e.target.closest('#grid')) { addSel = null; renderGrid(); } });
+document.addEventListener('keydown', e => { if (e.key === 'Escape' && addSel && addSel.b == null) { addSel = null; renderGrid(); } });
 document.addEventListener('click', e => { if (dPick && e.target.isConnected && !e.target.closest('#grid,#list')) { dPick = null; dPickAt = null; renderGrid(); renderList(); } });
 document.addEventListener('keydown', e => { if (e.key === 'Escape' && dPick) { dPick = null; dPickAt = null; renderGrid(); renderList(); } });
 document.addEventListener('keydown', e => { if (e.key === 'Escape' && wPick) { wPick = null; wPickAt = null; renderWeek(); } });
@@ -760,7 +908,7 @@ document.addEventListener('keydown', e => { if (e.key === 'Escape' && wPick) { w
 /* ---------- render ---------- */
 function renderAll(){
   if (!appReady) return;
-  renderCats(); renderGrid(); renderList(); renderTotals(); renderWeek(); renderClockTint(); renderSync();
+  renderCats(); renderGrid(); renderList(); renderTotals(); renderWeek(); renderClockTint(); renderSync(); renderCalChip(); Gcal.refresh();
   $('#todayBtn').textContent = sameDay(viewDate, new Date()) ? '오늘' : `${viewDate.getMonth()+1}/${viewDate.getDate()} (${DOW[viewDate.getDay()]})`;
 }
 function renderCats(){
@@ -797,35 +945,46 @@ function cellsFor(day, now){
     const s = Math.round((s0 - m0) / 600000) * 10, e = Math.min(1440, Math.round((e0 - m0) / 600000) * 10);
     for (let t = Math.max(0, s); t < e; t += 10) { const i = slotOf(t); if (i >= 0) cells[i] = { cat, live, ref }; }
   };
-  for (const e of dayEntries(day)) paint(e.start, e.end, e.cat, false, e);
+  for (const e of byPrio(dayEntries(day))) paint(e.start, e.end, e.cat, false, e);
   if (running.active && sameDay(running.start, day)) paint(running.start, now, running.cat, true, null);
   return cells;
 }
 function renderGrid(){
-  const now = Date.now(), cells = cellsFor(viewDate, now);
+  const now = Date.now(), cells = cellsFor(viewDate, now), appts = apptCells(viewDate);
   const isToday = sameDay(viewDate, now), nd = new Date(), nowMin = nd.getHours()*60 + nd.getMinutes();
   const nowSlot = isToday ? slotOf(nowMin) : -1, futureDay = startOfDay(viewDate) > nd;
   const colOf = i => { const c = Math.floor(i/6); return c < 3 ? c + 1 : c + 2; };
   if (dPick && !sameDay(dPickDay, viewDate)) { dPick = null; dPickAt = null; }
+  if (addSel && !sameDay(addSel.day, viewDate)) addSel = null;
   const hl = dPick || openItem;                 // highlighted record: tapped cell, or the record being edited
+  const inAdd = i => addSel && i >= Math.min(addSel.a, addSel.b ?? addSel.a) && i <= Math.max(addSel.a, addSel.b ?? addSel.a);
   let html = `<div class="hgrid${hl ? ' picking' : ''}">`;
   for (let i = 0; i < SLOTS; i++) {
-    const c = cells[i], sm = slotMin(i);
+    const c = cells[i], ap = appts[i], sm = slotMin(i);
     let cls = 'cell', st = `grid-column:${colOf(i)};grid-row:${i%6 + 1};`;
     if (c) { cls += c.live ? ' run' : ' fill'; st += `--cc:${catVar(c.cat)}`; if (hl && (c.ref ? c.ref.id : 'live') === hl) cls += ' pick'; }
     else if (futureDay || (isToday && sm > nowMin)) cls += ' future';
+    if (ap) cls += ' appt';
     if (i === nowSlot) cls += ' now';
-    const lab = `${pad(Math.floor(sm/60))}:${pad(sm%60)}` + (c ? ` ${CATS[c.cat]} ${c.ref ? c.ref.title : running.title}` : '');
+    if (inAdd(i)) cls += ' asel';
+    const lab = `${pad(Math.floor(sm/60))}:${pad(sm%60)}` + (c ? ` ${CATS[c.cat]} ${c.ref ? c.ref.title : running.title}` : '') + (ap ? ` · 약속 ${ap.title}` : '');
     html += `<button class="${cls}" style="${st}" data-i="${i}" aria-label="${esc(lab)}"></button>`;
   }
   const lb = (t, col, end) => `<span class="lb${end ? ' end' : ''}" style="grid-column:${col}" aria-hidden="true">${t}</span>`;
   html += lb(0,1) + lb(3,3,true) + [6,9,12,15,18,21].map(h => lb(h, h - 6 + 5)).join('') + lb(24,22,true) + '</div>';
   const g = $('#grid'); g.innerHTML = html;
-  // v1.2: tap a filled cell -> highlight its cells + its row in the record list, bubble over the cell.
-  // Tap the same record again to clear. Editing is done by tapping the highlighted row below.
+  const hg = g.querySelector('.hgrid');
+  // v1.2: tap a filled cell -> highlight its cells + its row in the record list, bubble over the cell (tap again to clear).
+  // v1.3: tap an empty cell -> start a range, tap the end cell -> add a record (past) or a calendar appointment (future).
   g.querySelectorAll('.cell').forEach(b => b.onclick = () => {
-    const i = +b.dataset.i, c = cells[i], sm = slotMin(i);
-    if (!c) { dPick = null; dPickAt = null; renderGrid(); renderList(); toast(`${pad(Math.floor(sm/60))}:${pad(sm%60)} · 기록 없음`); return; }
+    const i = +b.dataset.i, c = cells[i];
+    if (addSel && addSel.b == null) { addSel.b = i; renderGrid(); openAddSheet(); return; }
+    if (!c) {
+      dPick = null; dPickAt = null;
+      addSel = { day: new Date(viewDate), a: i, b: null };
+      renderGrid(); renderList(); return;
+    }
+    addSel = null;
     const r = c.ref ? c.ref.id : 'live';
     if (dPick === r) { dPick = null; dPickAt = null; }
     else { dPick = r; dPickAt = i; dPickDay = new Date(viewDate); if (openItem !== r) { openItem = null; preview = null; armedDelete = null; } }
@@ -833,11 +992,14 @@ function renderGrid(){
     renderGrid(); renderList();
     const it = dPick && $('#item-' + CSS.escape(dPick)); if (it) it.scrollIntoView({ behavior:'smooth', block:'nearest' });
   });
-  if (dPick) {
-    const hg = g.querySelector('.hgrid');
+  if (addSel && addSel.b == null) {
+    const sm = slotMin(addSel.a), ap = appts[addSel.a];
+    placePop(hg, hg.querySelector(`.cell[data-i="${addSel.a}"]`),
+      `<b><i></i>${pad(Math.floor(sm/60))}:${pad(sm%60)}부터</b><span>끝 칸을 누르세요 · 같은 칸 = 10분</span>${ap ? apptLine(ap) : ''}`, 'var(--ink)', true);
+  } else if (dPick) {
     let cell = dPickAt != null && hg.querySelector(`.cell[data-i="${dPickAt}"]`);
     if (!cell || !cell.classList.contains('pick')) cell = hg.querySelector('.cell.pick');
-    showPop(hg, cell, dPick, true);
+    showPop(hg, cell, dPick, true, cell ? appts[+cell.dataset.i] : null);
   }
 }
 function renderTotals(){
@@ -942,9 +1104,9 @@ function renderWeek(){
   days.forEach((d, i) => {
     const today = sameDay(d, now);
     html += `<div class="wh${today ? ' today' : ''}${i === 0 ? ' sun' : ''}" style="grid-column:${dayCol(i)} / span 6;grid-row:1" data-d="${i}"><b>${DOW[i]}</b><span>${d.getDate()}</span></div>`;
-    const cells = cellsFor(d, now), futureDay = startOfDay(d) > nd;
+    const cells = cellsFor(d, now), appts = apptCells(d), futureDay = startOfDay(d) > nd;
     for (let h = 0; h < HOURS.length; h++) for (let s = 0; s < 6; s++) {
-      const idx = h * 6 + s, c = cells[idx];
+      const idx = h * 6 + s, c = cells[idx], ap = appts[idx];
       let cls = 'wc', st = `grid-column:${dayCol(i) + s};grid-row:${rowOf(h)}`, r = '';
       if (c) {
         r = c.ref ? c.ref.id : 'live';
@@ -952,7 +1114,8 @@ function renderWeek(){
         if (wPick === r) cls += ' pick';
       }
       else if (futureDay || (today && slotMin(idx) > nowMin)) cls += ' fut';
-      html += `<i class="${cls}" style="${st}" data-d="${i}" data-i="${idx}"${r ? ` data-r="${r}"` : ''}></i>`;
+      if (ap) { cls += ' appt'; if (!c && wPick === 'appt:' + ap.id) cls += ' pick'; }
+      html += `<i class="${cls}" style="${st}" data-d="${i}" data-i="${idx}"${r ? ` data-r="${r}"` : ''}${ap ? ` data-a="${esc(ap.id)}"` : ''}></i>`;
     }
     html += `<div class="wt" style="grid-column:${dayCol(i)} / span 6;grid-row:${totalRow}">${daySums[i] > 0 ? fmtDur(daySums[i]) : '–'}</div>`;
     html += `<button class="wsel" style="grid-column:${dayCol(i)} / span 6;grid-row:2 / ${totalRow}" data-d="${i}" aria-pressed="${sameDay(d, viewDate)}" aria-label="${d.getMonth()+1}월 ${d.getDate()}일 보기"></button>`;
@@ -982,7 +1145,7 @@ function renderWeek(){
   const grid = body.querySelector('.wgrid');
   grid.onclick = ev => {
     const t = ev.target.closest('[data-d]'); if (!t || t.classList.contains('wsel')) return;
-    const d = +t.dataset.d, r = t.dataset.r || null, sameDayPicked = sameDay(days[d], viewDate);
+    const d = +t.dataset.d, r = t.dataset.r || (t.dataset.a ? 'appt:' + t.dataset.a : null), sameDayPicked = sameDay(days[d], viewDate);
     if (r && wPick === r && sameDayPicked) unpick();
     else { wPick = r; wPickAt = r ? `${d}:${t.dataset.i}` : null; }
     if (!sameDayPicked) { viewDate = new Date(days[d]); openItem = null; renderAll(); } else renderWeek();
@@ -997,28 +1160,40 @@ function renderWeek(){
 
   // Bubble above the tapped cell (or the record's first cell when picked from the list).
   if (!wPick) return;
+  const isAp = wPick.startsWith('appt:'), key = c => isAp ? c && c.dataset.a && 'appt:' + c.dataset.a : c && c.dataset.r;
   let cell = wPickAt && grid.querySelector(`.wc[data-d="${wPickAt.split(':')[0]}"][data-i="${wPickAt.split(':')[1]}"]`);
-  if (!cell || cell.dataset.r !== wPick) cell = grid.querySelector(`.wc[data-r="${wPick}"]`);
-  showPop(grid, cell, wPick);
+  if (!cell || key(cell) !== wPick) cell = grid.querySelector('.wc.pick');
+  showPop(grid, cell, wPick, false, !isAp && cell && cell.dataset.a ? Gcal.ev[cell.dataset.a] : null);
 }
 
-/* v1.2 shared bubble: record title + time over a grid cell. ref = entry id or 'live'. */
-function showPop(box, cell, ref, side){
+/* v1.2 shared bubble: record title + time over a grid cell. ref = entry id, 'live', 'appt:<id>' (v1.3) or null.
+   appt (v1.3) = calendar appointment on the same cell, shown as an extra line. */
+const apptLine = ap => `<span class="ap">약속 · ${esc(ap.title)} ${hm(ap.s)}–${hm(ap.e)}</span>`;
+function showPop(box, cell, ref, side, appt){
   if (!box || !cell) return;
+  if (ref && ref.startsWith('appt:')) {
+    const ap = Gcal.ev[ref.slice(5)]; if (!ap) return;
+    placePop(box, cell, `<b><i></i>${esc(ap.title)}</b><span>${hm(ap.s)}–${hm(ap.e)} · ${Math.round((ap.e - ap.s) / 60000)}분 · 약속</span>`, 'var(--appt)', side);
+    return;
+  }
   let info;
   if (ref === 'live') info = running.active ? { cat: running.cat, title: running.title, start: running.start, end: null } : null;
   else { const e = entries[ref]; info = e && { cat: e.cat, title: e.title || CATS[e.cat], start: e.start, end: e.end }; }
   if (!info) return;
   const mins = Math.max(0, Math.round(((info.end || Date.now()) - info.start) / 60000));
+  placePop(box, cell, `<b><i></i>${esc(info.title)}</b><span>${hm(info.start)}–${info.end ? hm(info.end) : ''} · ${info.end ? '' : '진행 중 · '}${mins}분 · ${CATS[info.cat]}</span>${appt ? apptLine(appt) : ''}`, catVar(info.cat), side);
+}
+function placePop(box, cell, html, color, side){
+  if (!box || !cell) return;
   const pop = document.createElement('div');
-  pop.className = 'wpop'; pop.style.setProperty('--cc', catVar(info.cat));
-  pop.innerHTML = `<b><i></i>${esc(info.title)}</b><span>${hm(info.start)}–${info.end ? hm(info.end) : ''} · ${info.end ? '' : '진행 중 · '}${mins}분 · ${CATS[info.cat]}</span>`;
+  pop.className = 'wpop'; pop.style.setProperty('--cc', color);
+  pop.innerHTML = html;
   box.appendChild(pop);
   const gr = box.getBoundingClientRect(), cr = cell.getBoundingClientRect();
   const w = pop.offsetWidth, h = pop.offsetHeight;
   if (side) {
     // Day grid: records run down a column, so put the bubble beside the whole highlighted block.
-    const rs = [...box.querySelectorAll('.pick')].map(x => x.getBoundingClientRect());
+    const picked = [...box.querySelectorAll('.pick')], rs = (picked.length ? picked : [cell]).map(x => x.getBoundingClientRect());
     const L = Math.min(...rs.map(r => r.left)) - gr.left, R = Math.max(...rs.map(r => r.right)) - gr.left;
     const T = Math.min(...rs.map(r => r.top)) - gr.top, B = Math.max(...rs.map(r => r.bottom)) - gr.top;
     let x = R + 8 + w <= gr.width ? R + 8 : L - 8 - w >= 0 ? L - 8 - w : null;
@@ -1032,7 +1207,7 @@ function showPop(box, cell, ref, side){
   const cx = cr.left - gr.left + cr.width / 2;
   pop.style.left = Math.max(0, Math.min(gr.width - w, cx - w / 2)) + 'px';
   let top = cr.top - gr.top - 6;
-  if (top - pop.offsetHeight < 0) { pop.style.transform = 'none'; top = cr.bottom - gr.top + 6; }
+  if (top - h < 0) { pop.style.transform = 'none'; top = cr.bottom - gr.top + 6; }
   pop.style.top = top + 'px';
 }
 
@@ -1044,6 +1219,58 @@ function renderSync(){
 }
 
 /* ---------- settings ---------- */
+/* v1.3: add a record (past) or a Google Calendar appointment (future) for the range picked in the day grid.
+   The cell that contains "now" counts as past; a range crossing now is cut at now. */
+function openAddSheet(){
+  if (!addSel) return;
+  const day = startOfDay(addSel.day).getTime(), lo = Math.min(addSel.a, addSel.b), hi = Math.max(addSel.a, addSel.b);
+  let start = day + slotMin(lo) * 60000, end = day + (slotMin(hi) + 10) * 60000;
+  const now = floorMin(Date.now()), nowCellStart = Math.floor(now / 600000) * 600000;
+  const appt = start > nowCellStart;
+  if (!appt && end > now) end = now;
+  if (appt && !Gcal.enabled) { addSel = null; renderGrid(); toast('미래 시간은 약속이에요. 구글 캘린더 연결이 준비되면 추가할 수 있어요.'); return; }
+  if (!appt && end - start < 60000) { addSel = null; renderGrid(); toast('기록할 시간이 1분이 안 돼요.'); return; }
+  const d = new Date(day);
+  const bg = document.createElement('div'); bg.className = 'sheet-bg';
+  bg.innerHTML = `<div class="sheet" role="dialog" aria-modal="true" aria-label="${appt ? '약속 추가' : '기록 추가'}">
+    <div class="sec-head"><h2>${appt ? '약속 추가' : '기록 추가'} <small>${d.getMonth()+1}월 ${d.getDate()}일(${DOW[d.getDay()]})</small></h2><button class="chip" data-x>닫기</button></div>
+    <div class="row"><label class="f"><span class="label">${appt ? '약속' : '작업'}</span><input id="ad-title" maxlength="80" placeholder="${appt ? '예: 팀 미팅' : '무엇을 했나요?'}"></label></div>
+    <div class="row"><label class="f"><span class="label">${appt ? '메모 (선택)' : '관련 링크 (선택)'}</span><input id="ad-link" ${appt ? '' : 'type="url" placeholder="https://"'} maxlength="500"></label></div>
+    ${appt ? '' : `<div class="row"><label class="f"><span class="label">카테고리</span><select id="ad-cat">${CATS.map((n,i)=>`<option value="${i}" ${i===selCat?'selected':''}>${n}</option>`).join('')}</select></label></div>`}
+    <div class="row"><label class="f"><span class="label">시작</span><input id="ad-s" type="time" value="${hm(start)}"></label><label class="f"><span class="label">종료</span><input id="ad-e" type="time" value="${hm(end)}"></label></div>
+    <p class="hint">${appt ? (Gcal.ok ? '구글 캘린더(assongcom@gmail.com)에 약속으로 추가해요.' : '구글 캘린더 연결 창이 먼저 떠요. 연결한 뒤 다시 추가를 눌러 주세요.') : '겹치는 기존 기록이 있으면 이 기록이 위에 보이고, 누적 시간은 한 번만 셉니다.'}</p>
+    <div class="act"><button class="chip primary" data-ok>${appt ? '약속 추가' : '기록 추가'}</button><button class="chip" data-x>취소</button></div>
+  </div>`;
+  document.body.appendChild(bg);
+  const close = () => { bg.remove(); addSel = null; renderGrid(); };
+  bg.addEventListener('click', e => { if (e.target === bg) close(); });
+  bg.querySelectorAll('[data-x]').forEach(b => b.onclick = close);
+  setTimeout(() => $('#ad-title', bg).focus(), 50);
+  $('[data-ok]', bg).onclick = async () => {
+    const toT = v => { const [h, m] = v.split(':').map(Number); return day + (h*60 + m) * 60000; };
+    const sv = $('#ad-s', bg).value, ev = $('#ad-e', bg).value;
+    if (!sv || !ev) { toast('시작과 종료 시각을 모두 입력하세요.'); return; }
+    const s0 = toT(sv); let e0 = toT(ev);
+    if (e0 <= s0) e0 += 86400000;
+    if (e0 - s0 > 12 * 3600000) { toast('12시간이 넘어요. 종료 시각을 확인하세요.'); return; }
+    const title = $('#ad-title', bg).value.trim(), note = $('#ad-link', bg).value.trim();
+    if (appt) {
+      if (!title) { toast('약속 이름을 적어 주세요.'); return; }
+      if (HT_PREFIX.test(title)) { toast('[Happy] 같은 말머리는 기록용이라 약속에는 쓸 수 없어요.'); return; }
+      if (!Gcal.ok) { Gcal.connect(); return; }
+      const btn = $('[data-ok]', bg); btn.disabled = true; btn.textContent = '추가 중…';
+      try { await Gcal.add(title, s0, e0, note); bg.remove(); addSel = null; renderAll(); toast('캘린더에 약속을 추가했어요'); }
+      catch (err) { btn.disabled = false; btn.textContent = '약속 추가'; toast(err.message === 'expired' ? '캘린더 연결이 끝났어요. 다시 눌러 연결해 주세요.' : '추가하지 못했어요: ' + err.message); }
+      return;
+    }
+    if (e0 > Date.now()) { toast('지금 이후 시간은 기록할 수 없어요. 약속으로 추가해 주세요.'); return; }
+    const cat = +$('#ad-cat', bg).value, t = Date.now();
+    const rec = { id: uuid(), cat, title: title || CATS[cat], link: normLink(note), start: s0, end: e0, uploaded:false, deleted:false, created: t, modified: t };
+    bg.remove(); addSel = null;
+    entries[rec.id] = rec; changed();
+    toast('기록을 추가했어요');
+  };
+}
 function openSettings(){
   const bg = document.createElement('div'); bg.className = 'sheet-bg';
   bg.innerHTML = `<div class="sheet" role="dialog" aria-modal="true" aria-label="설정">
@@ -1053,6 +1280,11 @@ function openSettings(){
       <div class="act"><button class="chip primary" id="syncNow">지금 동기화</button><button class="chip warn" id="logout">로그아웃</button></div>
       <p class="hint">아이폰 앱과 같은 클라우드에 저장됩니다. 화면이 열려 있는 동안 15초마다 맞추고, 기록을 바꾸면 바로 보냅니다. 애플워치 기록은 아이폰 앱을 거쳐 올라옵니다.</p>
     </div>
+    ${Gcal.enabled ? `<div class="sgrp"><span class="label">구글 캘린더 (약속)</span>
+      <div class="row2"><span>${Gcal.ok ? '연결됨' : Gcal.linked ? '연결 만료 · 다시 연결 필요' : '연결 안 됨'}</span><span>${Gcal.error ? esc(Gcal.error) : ''}</span></div>
+      <div class="act"><button class="chip primary" id="gcConnect">${Gcal.ok ? '약속 새로 고침' : '연결'}</button>${Gcal.linked ? '<button class="chip warn" id="gcOff">연결 해제</button>' : ''}</div>
+      <p class="hint">기본 캘린더의 약속을 그리드에 테두리로 보여 주고, 미래 칸에서 약속을 추가합니다. [Happy] 같은 말머리가 붙은 일정은 아이폰 앱이 저장한 기록이라 약속으로 보지 않습니다. 보안상 연결은 1시간마다 끝나며, 그때는 그리드 위 '캘린더 다시 연결'을 누르면 됩니다.</p>
+    </div>` : ''}
     <div class="sgrp"><span class="label">날씨</span>
       <div class="act"><button class="chip" id="wxNow">날씨 새로 고침</button></div>
       <p class="hint">강남구 청담동 기준 · Open-Meteo</p>
@@ -1060,7 +1292,7 @@ function openSettings(){
     <div class="sgrp"><span class="label">버전</span>
       <div class="row2"><span>Hope Tracker 웹</span><span>v${APP_VERSION} · ${APP_BUILD}</span></div>
       <div class="row2"><span>기준 아이폰 앱</span><span>${IOS_BASE}</span></div>
-      <p class="hint">캘린더 저장과 가까운 약속 칸은 아이폰 앱에서만 됩니다.</p>
+      <p class="hint">기록을 캘린더에 저장하는 건 아이폰 앱에서 합니다.</p>
     </div>
   </div>`;
   document.body.appendChild(bg);
@@ -1070,6 +1302,8 @@ function openSettings(){
   bg.addEventListener('click', e => { if (e.target === bg) close(); });
   $('#closeSet', bg).onclick = close;
   $('#syncNow', bg).onclick = () => Cloud.syncNow();
+  if ($('#gcConnect', bg)) $('#gcConnect', bg).onclick = () => { if (Gcal.ok) { Gcal.ranges = {}; Gcal.refresh(true); toast('약속을 새로 받는 중…'); } else Gcal.connect(); close(); };
+  if ($('#gcOff', bg)) $('#gcOff', bg).onclick = () => { Gcal.disconnect(); close(); toast('캘린더 연결을 해제했어요'); };
   $('#wxNow', bg).onclick = () => { loadWeather(true); toast('날씨를 새로 받았어요'); };
   $('#logout', bg).onclick = () => { close(); Cloud.signOut(); showGate(); };
 }

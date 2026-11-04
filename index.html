@@ -210,8 +210,9 @@ button{cursor:pointer}
 .gate-cells i{height:10px;border-radius:2px;background:var(--cell)}
 
 /* sheet */
-.sheet-bg{position:fixed;inset:0;background:rgba(10,12,11,.45);display:flex;align-items:flex-end;justify-content:center;z-index:20}
-.sheet{background:var(--surface);width:100%;max-width:480px;max-height:88vh;overflow:auto;border-radius:16px 16px 0 0;padding:16px 16px calc(20px + env(safe-area-inset-bottom,0px));display:flex;flex-direction:column;gap:16px}
+.sheet-bg{position:fixed;inset:0;background:rgba(10,12,11,.45);display:flex;align-items:center;justify-content:center;z-index:20;padding:max(12px,env(safe-area-inset-top,0px)) 12px max(12px,env(safe-area-inset-bottom,0px));overscroll-behavior:contain}
+.sheet{background:var(--surface);width:100%;max-width:480px;max-height:100%;overflow-y:auto;-webkit-overflow-scrolling:touch;overscroll-behavior:contain;border-radius:16px;padding:16px 16px 20px;display:flex;flex-direction:column;gap:16px;box-shadow:0 12px 40px rgba(0,0,0,.25)}
+.sheet>*{flex-shrink:0}   /* keep contents full size so the sheet scrolls instead of squashing */
 .sheet h2{font-size:16px;margin:0}
 .sgrp{display:flex;flex-direction:column;gap:8px}
 .sgrp .hint{font-size:12px;color:var(--muted);margin:0}
@@ -1084,10 +1085,8 @@ function renderWeek(){
   const daySums = days.map(d => totals(d, now).reduce((a,b)=>a+b,0)), total = daySums.reduce((a,b)=>a+b,0);
   const first = days[0], last = days[6];
   const range = `${first.getMonth()+1}/${first.getDate()}–${last.getMonth()+1}/${last.getDate()}`;
-  const isOpen = wide() || weekOpen;
+  const isOpen = weekOpen;
   $('#weekToggle').setAttribute('aria-expanded', isOpen);
-  $('#weekToggle').style.pointerEvents = wide() ? 'none' : '';
-  $('#weekToggle svg').style.display = wide() ? 'none' : '';
   $('#weekSum').textContent = `${range} · 합계 ${fmtDur(total)}`;
   const body = $('#weekBody'); body.hidden = !isOpen;
   if (!isOpen) return;

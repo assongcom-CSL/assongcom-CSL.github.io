@@ -246,6 +246,7 @@ body{padding-inline:max(16px,env(safe-area-inset-left,0px)) max(16px,env(safe-ar
 /* clock tinted while a task runs (iPhone: category color, white marks) */
 .w-clock .tint{fill:var(--cc,transparent);opacity:0;transition:opacity .3s}
 .w-clock.run .tint{opacity:.85}
+.w-clock.run #hH,.w-clock.run #hM,.w-clock.run .ht,.w-clock.run .numr{filter:drop-shadow(0 0 .9px rgba(0,0,0,.75))}
 .w-clock.run .mt{stroke:rgba(255,255,255,.5)}
 .w-clock.run .ht,.w-clock.run .hn,.w-clock.run .hb{stroke:#fff}
 .w-clock.run .numr{fill:#fff}
@@ -944,7 +945,8 @@ function renderClockTint(){
 /* v1.31: while a task runs, white wedges on the dial show the elapsed time in 5-minute steps.
    Each wedge is one 5-minute segment of the dial (aligned to the 5-minute marks, 30° each), filled once
    the clock has passed it, starting with the segment that holds the start time. After a full hour the
-   next lap is drawn over the first one, so the dial gets whiter as the task goes on (up to two laps). */
+   next lap is drawn over the first one, so the dial gets whiter as the task goes on: fully white after two hours.
+   The white hands, hour marks and numbers get a thin dark edge so they stay readable on white. */
 let clockSegs = -1;
 const seg5 = t => Math.floor((t - new Date(t).getTimezoneOffset() * 60000) / 300000);   // local 5-minute index
 function renderClockElapsed(force){
@@ -955,10 +957,10 @@ function renderClockElapsed(force){
   const s0 = running.active ? seg5(running.start) : 0, R = 75;
   const pt = deg => `${(50 + R * Math.sin(deg * Math.PI / 180)).toFixed(2)} ${(50 - R * Math.cos(deg * Math.PI / 180)).toFixed(2)}`;
   let h = '';
-  // At most two laps (2 hours), so the white hands stay readable on the dial.
+  // First lap: 60% white. Second lap: solid white, so after two hours the whole dial is white.
   for (let i = 0; i < Math.min(n, 24); i++) {
     const a = ((s0 + i) % 12) * 30;
-    h += `<path d="M50 50 L${pt(a)} A${R} ${R} 0 0 1 ${pt(a + 30)} Z" fill="#fff" fill-opacity="${i < 12 ? .4 : .3}"/>`;
+    h += `<path d="M50 50 L${pt(a)} A${R} ${R} 0 0 1 ${pt(a + 30)} Z" fill="#fff" fill-opacity="${i < 12 ? .6 : 1}"/>`;
   }
   g.innerHTML = h;
   const c = $('#wClock');
